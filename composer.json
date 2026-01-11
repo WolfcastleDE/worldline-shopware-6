@@ -39,7 +39,7 @@
         }
     },
     "require": {
-        "shopware/core": "6.6.*",
+        "shopware/core": ">=6.7.2.1 <6.8.0",
         "wl-online-payments-direct/sdk-php": "~5.17.0"
     }
 }

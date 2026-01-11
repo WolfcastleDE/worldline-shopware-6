@@ -8,6 +8,7 @@
 namespace MoptWorldline\Service;
 
 use Monolog\Level;
+use Psr\Log\LoggerInterface;
 use Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionStateHandler;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\Framework\MessageQueue\ScheduledTask\ScheduledTaskHandler;
@@ -27,6 +28,7 @@ class CronTaskHandler extends ScheduledTaskHandler
 
     public function __construct(
         EntityRepository             $scheduledTaskRepository,
+        LoggerInterface              $logger,
         EntityRepository             $salesChannelRepository,
         SystemConfigService          $systemConfigService,
         EntityRepository             $orderRepository,
@@ -43,7 +45,7 @@ class CronTaskHandler extends ScheduledTaskHandler
         $this->transactionStateHandler = $transactionStateHandler;
         $this->translator = $translator;
         $this->stateMachineRegistry = $stateMachineRegistry;
-        parent::__construct($scheduledTaskRepository);
+        parent::__construct($scheduledTaskRepository, $logger);
     }
 
     public function run(): void
