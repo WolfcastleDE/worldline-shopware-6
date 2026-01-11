@@ -12,10 +12,10 @@ use MoptWorldline\Adapter\WorldlineSDKAdapter;
 use MoptWorldline\Service\AdminTranslate;
 use MoptWorldline\Service\LogHelper;
 use MoptWorldline\Service\OrderHelper;
+use MoptWorldline\Service\Payment;
 use Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionStateHandler;
 use Shopware\Core\Checkout\Order\OrderEntity;
-use Shopware\Core\Checkout\Payment\Cart\AsyncPaymentTransactionStruct;
-use Shopware\Core\Checkout\Payment\Cart\PaymentHandler\AsynchronousPaymentHandlerInterface;
+use Shopware\Core\Checkout\Payment\Cart\PaymentTransactionStruct;
 use Shopware\Core\Checkout\Payment\PaymentException;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\System\SalesChannel\SalesChannelContext;
@@ -34,19 +34,19 @@ class PaymentFinalizeController extends AbstractController
     private RouterInterface $router;
     private EntityRepository $orderRepository;
     private EntityRepository $customerRepository;
-    private AsynchronousPaymentHandlerInterface $paymentHandler;
+    private Payment $paymentHandler;
     private OrderTransactionStateHandler $transactionStateHandler;
     private SystemConfigService $systemConfigService;
     private TranslatorInterface $translator;
 
     public function __construct(
-        SystemConfigService                 $systemConfigService,
-        EntityRepository                    $orderRepository,
-        EntityRepository                    $customerRepository,
-        AsynchronousPaymentHandlerInterface $paymentHandler,
-        OrderTransactionStateHandler        $transactionStateHandler,
-        RouterInterface                     $router,
-        TranslatorInterface                 $translator
+        SystemConfigService          $systemConfigService,
+        EntityRepository             $orderRepository,
+        EntityRepository             $customerRepository,
+        Payment                      $paymentHandler,
+        OrderTransactionStateHandler $transactionStateHandler,
+        RouterInterface              $router,
+        TranslatorInterface          $translator
     )
     {
         $this->systemConfigService = $systemConfigService;
@@ -112,7 +112,7 @@ class PaymentFinalizeController extends AbstractController
     ): string
     {
         $orderTransaction = $order->getTransactions()->last();
-        $paymentTransactionStruct = new AsyncPaymentTransactionStruct($orderTransaction, $order, '');
+        $paymentTransactionStruct = new PaymentTransactionStruct($orderTransaction->getId(), '');
 
         $orderId = $order->getId();
         $changedPayment = $request->query->getBoolean('changedPayment');
@@ -126,7 +126,7 @@ class PaymentFinalizeController extends AbstractController
         try {
             $logger = new LogHelper($adapter);
             $logger->log(AdminTranslate::trans($this->translator->getLocale(), 'forwardToPaymentHandler'));
-            $this->paymentHandler->finalize($paymentTransactionStruct, $request, $salesChannelContext);
+            $this->paymentHandler->finalize($request, $paymentTransactionStruct, $salesChannelContext->getContext());
         } catch (PaymentException $paymentException) {
             LogHelper::addLog(
                 Level::Error,

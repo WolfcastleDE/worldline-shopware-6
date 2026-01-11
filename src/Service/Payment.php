@@ -10,10 +10,12 @@ namespace MoptWorldline\Service;
 use Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionStates;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
 use Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionStateHandler;
-use Shopware\Core\Checkout\Payment\Cart\AsyncPaymentTransactionStruct;
-use Shopware\Core\Checkout\Payment\Cart\PaymentHandler\AsynchronousPaymentHandlerInterface;
+use Shopware\Core\Checkout\Payment\Cart\PaymentHandler\AbstractPaymentHandler;
+use Shopware\Core\Checkout\Payment\Cart\PaymentHandler\PaymentHandlerType;
+use Shopware\Core\Checkout\Payment\Cart\PaymentTransactionStruct;
 use Shopware\Core\Checkout\Payment\PaymentException;
 use Shopware\Core\Framework\Context;
+use Shopware\Core\Framework\Struct\Struct;
 use Shopware\Core\Framework\Validation\DataBag\RequestDataBag;
 use Shopware\Core\System\SalesChannel\SalesChannelContext;
 use Shopware\Core\System\StateMachine\StateMachineRegistry;
@@ -26,7 +28,7 @@ use Symfony\Component\HttpFoundation\Session\Session;
 use Symfony\Component\HttpFoundation\Session\SessionInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
 
-class Payment implements AsynchronousPaymentHandlerInterface
+class Payment extends AbstractPaymentHandler
 {
 
     const FULL_REDIRECT_PAYMENT_METHOD_ID = "moptWorldlineFullRedirect";
@@ -71,6 +73,7 @@ class Payment implements AsynchronousPaymentHandlerInterface
     private SystemConfigService $systemConfigService;
     private EntityRepository $orderRepository;
     private EntityRepository $customerRepository;
+    private EntityRepository $orderTransactionRepository;
     private TranslatorInterface $translator;
     private OrderTransactionStateHandler $transactionStateHandler;
     private StateMachineRegistry $stateMachineRegistry;
@@ -168,6 +171,7 @@ class Payment implements AsynchronousPaymentHandlerInterface
      * @param SystemConfigService $systemConfigService
      * @param EntityRepository $orderRepository
      * @param EntityRepository $customerRepository
+     * @param EntityRepository $orderTransactionRepository
      * @param TranslatorInterface $translator
      * @param OrderTransactionStateHandler $transactionStateHandler
      * @param StateMachineRegistry $stateMachineRegistry
@@ -176,6 +180,7 @@ class Payment implements AsynchronousPaymentHandlerInterface
         SystemConfigService          $systemConfigService,
         EntityRepository             $orderRepository,
         EntityRepository             $customerRepository,
+        EntityRepository             $orderTransactionRepository,
         TranslatorInterface          $translator,
         OrderTransactionStateHandler $transactionStateHandler,
         StateMachineRegistry         $stateMachineRegistry
@@ -184,30 +189,59 @@ class Payment implements AsynchronousPaymentHandlerInterface
         $this->systemConfigService = $systemConfigService;
         $this->orderRepository = $orderRepository;
         $this->customerRepository = $customerRepository;
+        $this->orderTransactionRepository = $orderTransactionRepository;
         $this->translator = $translator;
         $this->transactionStateHandler = $transactionStateHandler;
         $this->stateMachineRegistry = $stateMachineRegistry;
     }
 
     /**
-     * @param AsyncPaymentTransactionStruct $transaction
-     * @param RequestDataBag $dataBag
-     * @param SalesChannelContext $salesChannelContext
-     * @return RedirectResponse
+     * {@inheritdoc}
+     */
+    public function supports(
+        PaymentHandlerType $type,
+        string $paymentMethodId,
+        Context $context
+    ): bool {
+        return false;
+    }
+
+    /**
+     * @param Request $request
+     * @param PaymentTransactionStruct $transaction
+     * @param Context $context
+     * @param Struct|null $validateStruct
+     * @return RedirectResponse|null
      * @throws \Doctrine\DBAL\Driver\Exception
      */
-    public function pay(AsyncPaymentTransactionStruct $transaction, RequestDataBag $dataBag, SalesChannelContext $salesChannelContext): RedirectResponse
+    public function pay(
+        Request $request,
+        PaymentTransactionStruct $transaction,
+        Context $context,
+        ?Struct $validateStruct
+    ): ?RedirectResponse
     {
+        // Load order transaction with associations
+        $orderTransaction = $this->loadOrderTransaction($transaction->getOrderTransactionId(), $context);
+        if ($orderTransaction === null) {
+            throw PaymentException::asyncProcessInterrupted(
+                $transaction->getOrderTransactionId(),
+                'Order transaction not found'
+            );
+        }
+
+        // Get client data from request
+        $clientData = $this->getClientDataFromRequest($request);
+
         // Method that sends the return URL to the external gateway and gets a redirect URL back
         try {
-            $clientData = $this->getClientData($dataBag);
-            switch (OrderTransactionHelper::getWorldlinePaymentMethodId($transaction->getOrderTransaction())) {
+            switch (OrderTransactionHelper::getWorldlinePaymentMethodId($orderTransaction)) {
                 case self::IFRAME_PAYMENT_METHOD_ID:
                 case self::SAVED_CARD_PAYMENT_METHOD_ID:
                 {
                     $redirectUrl = $this->getHostedTokenizationRedirectUrl(
-                        $transaction,
-                        $salesChannelContext->getContext(),
+                        $orderTransaction,
+                        $context,
                         $clientData
                     );
                     break;
@@ -215,15 +249,15 @@ class Payment implements AsynchronousPaymentHandlerInterface
                 default:
                 {
                     $redirectUrl = $this->getHostedCheckoutRedirectUrl(
-                        $transaction,
-                        $salesChannelContext->getContext(),
+                        $orderTransaction,
+                        $context,
                         $clientData
                     );
                 }
             }
         } catch (\Exception $e) {
             throw PaymentException::asyncProcessInterrupted(
-                $transaction->getOrderTransaction()->getId(),
+                $orderTransaction->getId(),
                 'An error occurred during the communication with external payment gateway' . PHP_EOL . $e->getMessage()
             );
         }
@@ -231,46 +265,59 @@ class Payment implements AsynchronousPaymentHandlerInterface
     }
 
     /**
-     * @param RequestDataBag $dataBag
+     * @param Request $request
      * @return array
      */
-    private function getClientData(RequestDataBag $dataBag)
+    private function getClientDataFromRequest(Request $request): array
     {
         $clientData = [];
 
         foreach (Form::WORLDLINE_CART_FORM_KEYS as $key) {
-            if (!is_null($dataBag->get($key))) {
-                $clientData[$key] = $dataBag->get($key);
+            $value = $request->request->get($key);
+            if (!is_null($value)) {
+                $clientData[$key] = $value;
             }
         }
 
         // Change localeId with locale code (hex to de_DE, for example)
-        $clientData[Form::WORLDLINE_CART_FORM_LOCALE] = LocaleHelper::getCode($clientData[Form::WORLDLINE_CART_FORM_LOCALE]);
+        if (isset($clientData[Form::WORLDLINE_CART_FORM_LOCALE])) {
+            $clientData[Form::WORLDLINE_CART_FORM_LOCALE] = LocaleHelper::getCode($clientData[Form::WORLDLINE_CART_FORM_LOCALE]);
+        }
 
         return $clientData;
     }
 
     /**
-     * @param AsyncPaymentTransactionStruct $transaction
      * @param Request $request
-     * @param SalesChannelContext $salesChannelContext
+     * @param PaymentTransactionStruct $transaction
+     * @param Context $context
      * @return void
      */
     public function finalize(
-        AsyncPaymentTransactionStruct $transaction,
-        Request                       $request,
-        SalesChannelContext           $salesChannelContext
+        Request $request,
+        PaymentTransactionStruct $transaction,
+        Context $context
     ): void
     {
-        $transactionId = $transaction->getOrderTransaction()->getId();
-        $orderId = $transaction->getOrder()->getId();
-        $customFields = $transaction->getOrder()->getCustomFields();
+        $transactionId = $transaction->getOrderTransactionId();
+        $orderTransaction = $this->loadOrderTransaction($transactionId, $context);
+        if ($orderTransaction === null) {
+            $this->finalizeError($transactionId, "Order transaction not found");
+        }
+
+        $order = $orderTransaction->getOrder();
+        if ($order === null) {
+            $this->finalizeError($transactionId, "Order not found");
+        }
+
+        $orderId = $order->getId();
+        $customFields = $order->getCustomFields();
         if (is_array($customFields) && array_key_exists(Form::CUSTOM_FIELD_WORLDLINE_PAYMENT_TRANSACTION_STATUS, $customFields)) {
             $status = (int)$customFields[Form::CUSTOM_FIELD_WORLDLINE_PAYMENT_TRANSACTION_STATUS];
             $hostedCheckoutId = $customFields[Form::CUSTOM_FIELD_WORLDLINE_PAYMENT_HOSTED_CHECKOUT_ID];
 
             //We need to make an additional GET call to get current status
-            $handler = $this->getHandler($orderId, $salesChannelContext->getContext());
+            $handler = $this->getHandler($orderId, $context);
             try {
                 $status = $handler->updatePaymentStatus($hostedCheckoutId, true);
             } catch (\Exception $e) {
@@ -315,20 +362,36 @@ class Payment implements AsynchronousPaymentHandlerInterface
     }
 
     /**
-     * @param AsyncPaymentTransactionStruct $transaction
+     * Load order transaction with required associations
+     *
+     * @param string $orderTransactionId
+     * @param Context $context
+     * @return \Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionEntity|null
+     */
+    private function loadOrderTransaction(string $orderTransactionId, Context $context)
+    {
+        $criteria = new Criteria([$orderTransactionId]);
+        $criteria->addAssociation('order');
+        $criteria->addAssociation('paymentMethod');
+
+        return $this->orderTransactionRepository->search($criteria, $context)->first();
+    }
+
+    /**
+     * @param \Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionEntity $orderTransaction
      * @param Context $context
      * @param array $customerData
      * @return string
      * @throws \Exception
      */
-    private function getHostedCheckoutRedirectUrl(AsyncPaymentTransactionStruct $transaction, Context $context, array $customerData)
+    private function getHostedCheckoutRedirectUrl($orderTransaction, Context $context, array $customerData)
     {
-        $transactionId = $transaction->getOrderTransaction()->getId();
-        $orderId = $transaction->getOrder()->getId();
+        $transactionId = $orderTransaction->getId();
+        $orderId = $orderTransaction->getOrderId();
         $handler = $this->getHandler($orderId, $context);
 
         try {
-            $worldlinePaymentMethodId = OrderTransactionHelper::getWorldlinePaymentMethodId($transaction->getOrderTransaction());
+            $worldlinePaymentMethodId = OrderTransactionHelper::getWorldlinePaymentMethodId($orderTransaction);
             $hostedCheckoutResponse = $handler->createPayment($worldlinePaymentMethodId,  $customerData, '');
         } catch (\Exception $e) {
             throw PaymentException::asyncProcessInterrupted(
@@ -346,16 +409,16 @@ class Payment implements AsynchronousPaymentHandlerInterface
     }
 
     /**
-     * @param AsyncPaymentTransactionStruct $transaction
+     * @param \Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionEntity $orderTransaction
      * @param Context $context
      * @param array $customerData
      * @return string
      * @throws \Doctrine\DBAL\Driver\Exception
      */
-    private function getHostedTokenizationRedirectUrl(AsyncPaymentTransactionStruct $transaction, Context $context, array $customerData)
+    private function getHostedTokenizationRedirectUrl($orderTransaction, Context $context, array $customerData)
     {
-        $transactionId = $transaction->getOrderTransaction()->getId();
-        $orderId = $transaction->getOrder()->getId();
+        $transactionId = $orderTransaction->getId();
+        $orderId = $orderTransaction->getOrderId();
         $handler = $this->getHandler($orderId, $context);
 
         try {

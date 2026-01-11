@@ -11,11 +11,11 @@ use Monolog\Level;
 use MoptWorldline\Adapter\WorldlineSDKAdapter;
 use MoptWorldline\Service\LogHelper;
 use MoptWorldline\Service\OrderHelper;
+use MoptWorldline\Service\Payment;
 use OnlinePayments\Sdk\Webhooks\InMemorySecretKeyStore;
 use OnlinePayments\Sdk\Webhooks\WebhooksHelper;
 use MoptWorldline\Service\PaymentHandler;
 use Shopware\Core\Checkout\Order\Aggregate\OrderTransaction\OrderTransactionStateHandler;
-use Shopware\Core\Checkout\Payment\Cart\PaymentHandler\AsynchronousPaymentHandlerInterface;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepository;
 use Shopware\Core\System\SalesChannel\SalesChannelContext;
 use Shopware\Core\System\StateMachine\StateMachineRegistry;
@@ -33,21 +33,21 @@ class PaymentWebhookController extends AbstractController
     private RouterInterface $router;
     private EntityRepository $orderRepository;
     private EntityRepository $customerRepository;
-    private AsynchronousPaymentHandlerInterface $paymentHandler;
+    private Payment $paymentHandler;
     private OrderTransactionStateHandler $transactionStateHandler;
     private SystemConfigService $systemConfigService;
     private TranslatorInterface $translator;
     private StateMachineRegistry $stateMachineRegistry;
 
     public function __construct(
-        SystemConfigService                 $systemConfigService,
-        EntityRepository                    $orderRepository,
-        EntityRepository                    $customerRepository,
-        AsynchronousPaymentHandlerInterface $paymentHandler,
-        OrderTransactionStateHandler        $transactionStateHandler,
-        RouterInterface                     $router,
-        TranslatorInterface                 $translator,
-        StateMachineRegistry                $stateMachineRegistry
+        SystemConfigService          $systemConfigService,
+        EntityRepository             $orderRepository,
+        EntityRepository             $customerRepository,
+        Payment                      $paymentHandler,
+        OrderTransactionStateHandler $transactionStateHandler,
+        RouterInterface              $router,
+        TranslatorInterface          $translator,
+        StateMachineRegistry         $stateMachineRegistry
     )
     {
         $this->systemConfigService = $systemConfigService;
