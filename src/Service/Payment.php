@@ -303,11 +303,13 @@ class Payment extends AbstractPaymentHandler
         $orderTransaction = $this->loadOrderTransaction($transactionId, $context);
         if ($orderTransaction === null) {
             $this->finalizeError($transactionId, "Order transaction not found");
+            return; // @codeCoverageIgnore - finalizeError throws exception
         }
 
         $order = $orderTransaction->getOrder();
         if ($order === null) {
             $this->finalizeError($transactionId, "Order not found");
+            return; // @codeCoverageIgnore - finalizeError throws exception
         }
 
         $orderId = $order->getId();
@@ -351,9 +353,9 @@ class Payment extends AbstractPaymentHandler
     /**
      * @param $transactionId
      * @param $message
-     * @return mixed
+     * @return never
      */
-    private function finalizeError($transactionId, $message)
+    private function finalizeError($transactionId, $message): never
     {
         throw PaymentException::asyncFinalizeInterrupted(
             $transactionId,
